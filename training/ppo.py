@@ -79,6 +79,9 @@ class Rollout:
     bootstrap_values: list[Tensor]
     values: list[Tensor]
     states: list[FlyBrainState | None]
+    episode_rewards: list[float]
+    episode_successes: int
+    episode_collisions: int
 
 
 class PPOTrainer:
@@ -95,15 +98,19 @@ class PPOTrainer:
     def collect_rollout(self, environment: Any, observation: Tensor, state: FlyBrainState | None) -> tuple[Rollout, Tensor, FlyBrainState | None, int]:
         data = {name: [] for name in ("observations", "actions", "log_probs", "rewards", "terminated", "episode_ended", "bootstrap_values", "values", "states")}
         completed_episodes = 0
+        episode_rewards: list[float] = []
+        episode_successes = episode_collisions = 0
+        current_episode_reward = 0.0
         for _ in range(self.config.rollout_steps):
             data["observations"].append(observation.detach())
             data["states"].append(state)
             action, log_prob, value, next_state = self.policy.act(observation, state)
-            next_observation, reward, terminated, truncated, _ = environment.step(action)
+            next_observation, reward, terminated, truncated, info = environment.step(action)
             done = terminated | truncated
             data["actions"].append(action.detach())
             data["log_probs"].append(log_prob.detach())
             data["rewards"].append(reward.detach())
+            current_episode_reward += float(reward.item())
             data["terminated"].append(terminated.detach())
             data["episode_ended"].append(done.detach())
             data["values"].append(value.detach())
@@ -114,10 +121,19 @@ class PPOTrainer:
             observation, state = next_observation, next_state
             if bool(done.item()):
                 completed_episodes += 1
+                episode_rewards.append(current_episode_reward)
+                current_episode_reward = 0.0
+                episode_successes += int(info["success"].item())
+                episode_collisions += int(info["collision"].item())
                 self.episode_index += 1
                 observation = environment.reset(seed=self.episode_seed + self.episode_index)
                 state = self.policy.initial_state(self.device)
-        return Rollout(**data), observation, state, completed_episodes
+        return Rollout(
+            **data,
+            episode_rewards=episode_rewards,
+            episode_successes=episode_successes,
+            episode_collisions=episode_collisions,
+        ), observation, state, completed_episodes
 
     def update(self, rollout: Rollout) -> dict[str, float]:
         rewards = torch.stack(rollout.rewards).squeeze(-1)
@@ -134,7 +150,8 @@ class PPOTrainer:
             gae = delta + self.config.gamma * self.config.gae_lambda * (1.0 - episode_ended[index]) * gae
             advantages[index] = gae
         returns = advantages + values
-        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+        raw_advantage_mean = advantages.mean()
+        advantages = (advantages - raw_advantage_mean) / (advantages.std(unbiased=False) + 1e-8)
         old_log_probs = torch.stack(rollout.log_probs).squeeze(-1)
         actions = rollout.actions
         metrics: dict[str, float] = {}
@@ -154,7 +171,25 @@ class PPOTrainer:
             loss = policy_loss + self.config.value_coefficient * value_loss - self.config.entropy_coefficient * entropy
             self.optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
+            gradient_norm = nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
             self.optimizer.step()
-            metrics = {"policy_loss": float(policy_loss.detach()), "value_loss": float(value_loss.detach()), "entropy": float(entropy.detach())}
+            if not torch.isfinite(loss) or not torch.isfinite(new_log_probs).all():
+                raise FloatingPointError("PPO update produced NaN or Inf")
+            sampled_actions = torch.stack(actions)
+            metrics = {
+                "mean_action": float(sampled_actions.mean()),
+                "std_action": float(sampled_actions.std(unbiased=False)),
+                "min_action": float(sampled_actions.min()),
+                "max_action": float(sampled_actions.max()),
+                "mean_value": float(values.mean()),
+                "mean_advantage": float(raw_advantage_mean),
+                "mean_ratio": float(ratio.mean().detach()),
+                "policy_loss": float(policy_loss.detach()),
+                "value_loss": float(value_loss.detach()),
+                "entropy": float(entropy.detach()),
+                "gradient_norm": float(gradient_norm.detach()),
+                "episode_reward": sum(rollout.episode_rewards) / len(rollout.episode_rewards) if rollout.episode_rewards else 0.0,
+                "episode_success_rate": rollout.episode_successes / len(rollout.episode_rewards) if rollout.episode_rewards else 0.0,
+                "episode_collision_rate": rollout.episode_collisions / len(rollout.episode_rewards) if rollout.episode_rewards else 0.0,
+            }
         return metrics

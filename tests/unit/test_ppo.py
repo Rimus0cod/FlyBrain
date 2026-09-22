@@ -15,6 +15,9 @@ class PPOPolicyTests(unittest.TestCase):
 
         self.assertTrue(torch.all((action > 0.0) & (action < 1.0)))
         self.assertTrue(torch.isfinite(log_prob).all())
+        distribution, _ = policy.distribution(observation, None)
+        self.assertTrue(torch.all(distribution.concentration1 > 0))
+        self.assertTrue(torch.all(distribution.concentration0 > 0))
 
     def test_recurrent_policy_state_is_external_to_parameters(self) -> None:
         policy = PPOPolicy("flybrain")

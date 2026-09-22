@@ -56,7 +56,19 @@ def run_model(name: str, config: dict, output_dir: Path) -> dict:
     torch.save({"controller": name, "observation_dim": observation.shape[-1], "state_dict": policy.state_dict(), "seed": seed, "config": config}, checkpoint_path)
     evaluation_environment = Navigation2DEnvironment(**environment_config)
     metrics = evaluate(policy, evaluation_environment, config["evaluation_episodes"], seed + 10_000)
-    metrics.update({"training_steps": steps, "completed_training_episodes": completed_episodes, "final_update": updates[-1]})
+    restored_policy = load_checkpoint(checkpoint_path)
+    restored_metrics = evaluate(restored_policy, Navigation2DEnvironment(**environment_config), config["evaluation_episodes"], seed + 10_000)
+    comparable = ("success_rate", "collision_rate", "path_efficiency", "mean_reward", "control_stability", "parameter_count")
+    checkpoint_matches = all(metrics[key] == restored_metrics[key] for key in comparable)
+    metrics.update({
+        "controller_name": name,
+        "controller_parameter_count": sum(parameter.numel() for parameter in policy.controller.parameters()),
+        "training_steps": steps,
+        "completed_training_episodes": completed_episodes,
+        "final_update": updates[-1],
+        "checkpoint_evaluation": restored_metrics,
+        "checkpoint_evaluation_matches": checkpoint_matches,
+    })
     (output_dir / f"{name}.metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True))
     return metrics
 

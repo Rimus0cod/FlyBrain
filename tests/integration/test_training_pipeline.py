@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 
 from training.run_experiment import load_checkpoint, run_model
+from simulation.environment import Navigation2DEnvironment
+from training.ppo import PPOConfig, PPOPolicy, PPOTrainer
+import torch
 
 
 class TrainingPipelineTests(unittest.TestCase):
@@ -33,6 +36,20 @@ class TrainingPipelineTests(unittest.TestCase):
             restored = load_checkpoint(output_dir / "flybrain.pt")
             self.assertEqual(restored.controller_name, "flybrain")
             self.assertTrue(all(parameter.isfinite().all() for parameter in restored.parameters()))
+
+    def test_ppo_update_changes_parameters_for_each_controller(self) -> None:
+        for controller in ("baseline_mlp", "flybrain"):
+            torch.manual_seed(11)
+            environment = Navigation2DEnvironment(max_steps=10)
+            observation = environment.reset(seed=11)
+            policy = PPOPolicy(controller)
+            before = [parameter.detach().clone() for parameter in policy.parameters()]
+            trainer = PPOTrainer(policy, PPOConfig(rollout_steps=8, update_epochs=1), episode_seed=11)
+            rollout, _, _, _ = trainer.collect_rollout(environment, observation, policy.initial_state(torch.device("cpu")))
+            diagnostics = trainer.update(rollout)
+            self.assertTrue(any(not torch.equal(old, new) for old, new in zip(before, policy.parameters())))
+            self.assertGreaterEqual(diagnostics["min_action"], 0.0)
+            self.assertLessEqual(diagnostics["max_action"], 1.0)
 
 
 if __name__ == "__main__":
