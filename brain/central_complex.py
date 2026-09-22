@@ -1,72 +1,56 @@
-"""Recurrent heading representation used by the fly-inspired controller."""
+"""A compact recurrent heading circuit with an optional hard topology mask."""
 
 import torch
-import torch.nn as nn
+from torch import Tensor, nn
 import torch.nn.functional as F
 
+
 class CentralComplex(nn.Module):
-    def __init__(self, num_neurons=16, sensory_input_dim=2):
+    """Ring-attractor engineering abstraction with external runtime state."""
+
+    def __init__(
+        self, num_neurons: int = 16, sensory_input_dim: int = 2, topology_constrained: bool = False
+    ) -> None:
         super().__init__()
         self.num_neurons = num_neurons
-        
-        # Входные веса: переводят сырые сенсоры (например, [angular_velocity, visual_flow]) 
-        # в стимуляцию кольца
+        self.topology_constrained = topology_constrained
         self.W_in = nn.Linear(sensory_input_dim, num_neurons, bias=False)
-        
-        # Рекуррентные веса кольца
-        # В биологии связи фиксированы эволюцией: соседи возбуждают друг друга, дальние - тормозят.
-        # Мы создаем обучаемую матрицу (parameter), но инициализируем её биологически логично.
-        self.W_rec = nn.Parameter(self._init_ring_weights())
-        
-        # Внутреннее состояние (компас)
-        self.state = None 
+        self.W_rec_raw = nn.Parameter(self._init_ring_weights())
+        self.register_buffer("connectivity_mask", self._make_connectivity_mask())
 
-    def _init_ring_weights(self):
-        """
-        Инициализация весов 'Мексиканская шляпа' (локальное возбуждение, глобальное торможение).
-        Это позволяет пику активности стабильно существовать на кольце.
-        """
-        W = torch.zeros((self.num_neurons, self.num_neurons))
-        for i in range(self.num_neurons):
-            for j in range(self.num_neurons):
-                # Вычисляем кратчайшее расстояние по кольцу
-                dist = min(abs(i - j), self.num_neurons - abs(i - j))
-                # Соседи (+1), чуть дальше (-0.5), далеко (-0.1)
-                if dist == 0: W[i, j] = 1.0
-                elif dist == 1: W[i, j] = 0.5
-                else: W[i, j] = -0.2
-        return W
+    def _make_connectivity_mask(self) -> Tensor:
+        indices = torch.arange(self.num_neurons)
+        distance = (indices[:, None] - indices[None, :]).abs()
+        ring_distance = torch.minimum(distance, self.num_neurons - distance)
+        return (ring_distance <= 1).to(torch.float32)
 
-    def reset_state(self, batch_size=1, device=None):
-        """Сброс состояния при начале нового эпизода симуляции"""
-        # Начинаем с нейтрального состояния (нули) или случайного шума
-        device = device or self.W_rec.device
-        self.state = torch.zeros(batch_size, self.num_neurons, device=device)
-        # Можно искусственно возбудить нулевой нейрон (стартуем смотря на 0 градусов)
-        self.state[:, 0] = 1.0
+    def _init_ring_weights(self) -> Tensor:
+        weights = torch.full((self.num_neurons, self.num_neurons), -0.2)
+        for index in range(self.num_neurons):
+            weights[index, index] = 1.0
+            weights[index, (index - 1) % self.num_neurons] = 0.5
+            weights[index, (index + 1) % self.num_neurons] = 0.5
+        return weights
 
-    def forward(self, sensory_input):
-        """
-        Обновление состояния (f(state[t], input[t]))
-        sensory_input: тензор формы [batch_size, sensory_input_dim]
-        """
-        if self.state is None or self.state.shape[0] != sensory_input.shape[0]:
-            self.reset_state(
-                batch_size=sensory_input.shape[0], device=sensory_input.device
-            )
-            
-        # 1. Влияние сенсоров (например, поворот тела)
+    @property
+    def recurrent_weights(self) -> Tensor:
+        """Effective synapses; forbidden entries are exactly zero when masked."""
+        if self.topology_constrained:
+            return self.W_rec_raw * self.connectivity_mask
+        return self.W_rec_raw
+
+    def initial_state(self, batch_size: int, device: torch.device | None = None) -> Tensor:
+        device = device or self.W_rec_raw.device
+        state = torch.zeros(batch_size, self.num_neurons, device=device)
+        state[:, 0] = 1.0
+        return state
+
+    def forward(self, sensory_input: Tensor, state: Tensor | None = None) -> Tensor:
+        if state is None:
+            state = self.initial_state(sensory_input.shape[0], sensory_input.device)
+        if state.shape != (sensory_input.shape[0], self.num_neurons):
+            raise ValueError("state must have shape [batch_size, num_neurons]")
         stimulus = self.W_in(sensory_input)
-        
-        # 2. Рекуррентное влияние кольца на само себя (поддержание пика)
-        # Умножаем текущее состояние на матрицу весов
-        ring_effect = torch.matmul(self.state, self.W_rec)
-        
-        # 3. Новое состояние (с нелинейностью для отсечения отрицательной активности)
+        ring_effect = torch.matmul(state, self.recurrent_weights)
         new_state = F.relu(ring_effect + stimulus)
-        
-        # Опционально: нормализация, чтобы активность не взрывалась до бесконечности
-        new_state = new_state / (new_state.sum(dim=-1, keepdim=True) + 1e-8)
-        
-        self.state = new_state
-        return self.state
+        return new_state / (new_state.sum(dim=-1, keepdim=True) + 1e-8)

@@ -8,9 +8,12 @@ The sensory model must expose only information that could plausibly be obtained 
 
 ### 2.1 Panoramic receptor layout
 
-Initial version: 72 rays distributed over a forward-biased hemisphere.
+Milestone 001 uses four broad panoramic beacon receptors. This is a deliberately
+small engineering proxy for visual direction; it is not a biological retina.
+The target is rendered into those receptors by the environment, but the policy
+never receives target coordinates, exact bearing or exact distance.
 
-Each receptor stores a temporal state:
+Later milestones may give each receptor temporal state:
 
 ```text
 previous_distance
@@ -46,7 +49,17 @@ This is an engineering approximation. Low `tau` means rapidly approaching visual
 
 Do not expose exact collision time from the simulator as a privileged label; calculate it from the same noisy quantities available to the policy.
 
-### 2.4 Visual observation vector
+### 2.4 Milestone 001 observation vector
+
+```text
+4 x coarse beacon receptor activity in [0, 1]
++ normalized angular velocity in [-1, 1]
+```
+
+The target's world position is allowed only in simulator reward/evaluation
+bookkeeping. It is not part of the controller interface.
+
+### 2.5 Future visual observation vector
 
 Example:
 

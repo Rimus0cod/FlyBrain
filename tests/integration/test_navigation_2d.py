@@ -19,12 +19,15 @@ class Navigation2DIntegrationTests(unittest.TestCase):
 
         for controller in controllers:
             if isinstance(controller, FlyBrainController):
-                controller.reset_state(batch_size=2)
-            next_observation, reward, terminated, info = environment.step(controller(observation))
+                motors, _ = controller(observation, controller.initial_state(batch_size=2))
+            else:
+                motors = controller(observation)
+            next_observation, reward, terminated, truncated, info = environment.step(motors)
 
             self.assertEqual(tuple(next_observation.shape), (2, 5))
             self.assertEqual(tuple(reward.shape), (2,))
             self.assertEqual(tuple(terminated.shape), (2,))
+            self.assertEqual(tuple(truncated.shape), (2,))
             self.assertEqual(tuple(info["distance"].shape), (2,))
 
 

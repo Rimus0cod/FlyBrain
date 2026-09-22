@@ -12,12 +12,15 @@ def run_smoke_test() -> None:
     flybrain = FlyBrainController(visual_dim=4)
     baseline = BaselineMLP(observation_dim=observation.shape[-1])
 
-    flybrain.reset_state(batch_size=observation.shape[0])
+    flybrain_state = flybrain.initial_state(batch_size=observation.shape[0])
     for controller in (baseline, flybrain):
-        motors = controller(observation)
-        _, reward, terminated, info = environment.step(motors)
+        if controller is flybrain:
+            motors, flybrain_state = controller(observation, flybrain_state)
+        else:
+            motors = controller(observation)
+        _, reward, terminated, truncated, info = environment.step(motors)
         assert motors.shape == (2, 2)
-        assert reward.shape == terminated.shape == info["distance"].shape == (2,)
+        assert reward.shape == terminated.shape == truncated.shape == info["distance"].shape == (2,)
 
 
 if __name__ == "__main__":

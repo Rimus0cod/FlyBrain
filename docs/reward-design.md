@@ -50,6 +50,14 @@ R =
 
 Exact coefficients are experimental parameters, not fixed truths.
 
+## 3.1 Milestone 001 contract
+
+The first 2D task logs and sums these explicit terms: progress toward the hidden
+marker, angular-rate stability, motor-energy penalty, one-time completion bonus,
+and arena-boundary collision penalty. Episodes terminate on success or boundary
+collision and truncate at the configured step limit. Every compared policy uses
+this same contract; coefficients and limits must be recorded in its config.
+
 ## 4. Preventing reward hacking
 
 Watch for these shortcuts:

@@ -63,6 +63,12 @@ W_ij = trainable  allowed connection
 
 This allows a direct experiment on whether structural constraints improve sample efficiency, robustness, or compute cost.
 
+In code, the trainable raw matrix is multiplied by a registered binary mask on
+every forward pass. The effective forbidden synapses are therefore exactly zero,
+including after optimizer steps. Heading activity is explicit episode runtime
+state passed into and returned from the circuit; it is not a model parameter or
+module buffer.
+
 ## 6. Evaluation
 
 Measure:
