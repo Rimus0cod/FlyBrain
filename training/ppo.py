@@ -1,4 +1,4 @@
-"""Small, dependency-free PPO implementation for Milestone 001."""
+"""Small dependency-light PPO implementation for Milestone 001."""
 
 from __future__ import annotations
 
@@ -37,9 +37,8 @@ class PPOPolicy(nn.Module):
             self.controller = FlyBrainController(visual_dim=observation_dim - 1)
         else:
             raise ValueError(f"Unknown controller: {controller_name}")
+
         self.controller_name = controller_name
-        # Beta has support exactly on (0, 1), so sampled actuator commands need
-        # no clamp and their log-probability remains mathematically valid.
         self.log_concentration = nn.Parameter(torch.full((2,), 1.5))
         self.value_head = nn.Sequential(
             nn.Linear(observation_dim, 32), nn.Tanh(), nn.Linear(32, 1)
@@ -50,22 +49,39 @@ class PPOPolicy(nn.Module):
             return self.controller.initial_state(1, device)  # type: ignore[union-attr]
         return None
 
-    def distribution(self, observation: Tensor, state: FlyBrainState | None) -> tuple[Beta, FlyBrainState | None]:
+    def distribution(
+        self, observation: Tensor, state: FlyBrainState | None
+    ) -> tuple[Beta, FlyBrainState | None]:
         if self.controller_name == "flybrain":
             mean, next_state = self.controller(observation, state)  # type: ignore[operator]
         else:
             mean, next_state = self.controller(observation), None
-        concentration = self.log_concentration.exp().expand_as(mean)
-        return Beta(mean * concentration + 1.0, (1.0 - mean) * concentration + 1.0), next_state
+
+        # Keep the controller output as the actual mean of the Beta policy.
+        mean = mean.clamp(1e-4, 1.0 - 1e-4)
+        concentration = self.log_concentration.exp().clamp(2.0, 100.0)
+        alpha = mean * concentration
+        beta = (1.0 - mean) * concentration
+        return Beta(alpha, beta), next_state
 
     def value(self, observation: Tensor) -> Tensor:
         return self.value_head(observation).squeeze(-1)
 
     @torch.no_grad()
-    def act(self, observation: Tensor, state: FlyBrainState | None, deterministic: bool = False) -> tuple[Tensor, Tensor, Tensor, FlyBrainState | None]:
+    def act(
+        self,
+        observation: Tensor,
+        state: FlyBrainState | None,
+        deterministic: bool = False,
+    ) -> tuple[Tensor, Tensor, Tensor, FlyBrainState | None]:
         distribution, next_state = self.distribution(observation, state)
         action = distribution.mean if deterministic else distribution.sample()
-        return action, distribution.log_prob(action).sum(-1), self.value(observation), next_state
+        return (
+            action,
+            distribution.log_prob(action).sum(-1),
+            self.value(observation),
+            next_state,
+        )
 
 
 @dataclass
@@ -82,9 +98,15 @@ class Rollout:
 
 
 class PPOTrainer:
-    """On-policy PPO trainer for a single deterministic 2D environment stream."""
+    """On-policy PPO trainer for the batch-size-one Milestone 001 environment."""
 
-    def __init__(self, policy: PPOPolicy, config: PPOConfig, device: str = "cpu", episode_seed: int = 0) -> None:
+    def __init__(
+        self,
+        policy: PPOPolicy,
+        config: PPOConfig,
+        device: str = "cpu",
+        episode_seed: int = 0,
+    ) -> None:
         self.policy = policy.to(device)
         self.config = config
         self.device = torch.device(device)
@@ -92,31 +114,58 @@ class PPOTrainer:
         self.episode_seed = episode_seed
         self.episode_index = 0
 
-    def collect_rollout(self, environment: Any, observation: Tensor, state: FlyBrainState | None) -> tuple[Rollout, Tensor, FlyBrainState | None, int]:
-        data = {name: [] for name in ("observations", "actions", "log_probs", "rewards", "terminated", "episode_ended", "bootstrap_values", "values", "states")}
+    def collect_rollout(
+        self,
+        environment: Any,
+        observation: Tensor,
+        state: FlyBrainState | None,
+    ) -> tuple[Rollout, Tensor, FlyBrainState | None, int]:
+        data = {
+            name: []
+            for name in (
+                "observations",
+                "actions",
+                "log_probs",
+                "rewards",
+                "terminated",
+                "episode_ended",
+                "bootstrap_values",
+                "values",
+                "states",
+            )
+        }
         completed_episodes = 0
+
         for _ in range(self.config.rollout_steps):
             data["observations"].append(observation.detach())
             data["states"].append(state)
+
             action, log_prob, value, next_state = self.policy.act(observation, state)
             next_observation, reward, terminated, truncated, _ = environment.step(action)
             done = terminated | truncated
+
             data["actions"].append(action.detach())
             data["log_probs"].append(log_prob.detach())
             data["rewards"].append(reward.detach())
             data["terminated"].append(terminated.detach())
             data["episode_ended"].append(done.detach())
             data["values"].append(value.detach())
-            # A time-limit truncation bootstraps from V(s[t+1]); a true terminal
-            # state does not. This prevents a time-limit bias in GAE.
+
             next_value = self.policy.value(next_observation).detach()
-            data["bootstrap_values"].append(torch.where(terminated, torch.zeros_like(next_value), next_value))
+            data["bootstrap_values"].append(
+                torch.where(terminated, torch.zeros_like(next_value), next_value)
+            )
+
             observation, state = next_observation, next_state
+
             if bool(done.item()):
                 completed_episodes += 1
                 self.episode_index += 1
-                observation = environment.reset(seed=self.episode_seed + self.episode_index)
+                observation = environment.reset(
+                    seed=self.episode_seed + self.episode_index
+                )
                 state = self.policy.initial_state(self.device)
+
         return Rollout(**data), observation, state, completed_episodes
 
     def update(self, rollout: Rollout) -> dict[str, float]:
@@ -125,36 +174,72 @@ class PPOTrainer:
         episode_ended = torch.stack(rollout.episode_ended).squeeze(-1).float()
         bootstrap_values = torch.stack(rollout.bootstrap_values).squeeze(-1)
         values = torch.stack(rollout.values).squeeze(-1)
+
         advantages = torch.zeros_like(rewards)
         gae = torch.zeros((), device=self.device)
         for index in reversed(range(len(rewards))):
-            delta = rewards[index] + self.config.gamma * bootstrap_values[index] - values[index]
-            # Truncations bootstrap their own V(s[t+1]), but neither terminal
-            # nor truncated episodes may leak advantages into the next reset.
-            gae = delta + self.config.gamma * self.config.gae_lambda * (1.0 - episode_ended[index]) * gae
+            delta = (
+                rewards[index]
+                + self.config.gamma * bootstrap_values[index]
+                - values[index]
+            )
+            gae = (
+                delta
+                + self.config.gamma
+                * self.config.gae_lambda
+                * (1.0 - episode_ended[index])
+                * gae
+            )
             advantages[index] = gae
+
         returns = advantages + values
-        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+        normalized_advantages = (
+            advantages - advantages.mean()
+        ) / (advantages.std(unbiased=False) + 1e-8)
+
         old_log_probs = torch.stack(rollout.log_probs).squeeze(-1)
         actions = rollout.actions
         metrics: dict[str, float] = {}
+
         for _ in range(self.config.update_epochs):
             new_log_probs, entropies, predicted_values = [], [], []
-            for observation, action, state in zip(rollout.observations, actions, rollout.states):
+            for observation, action, state in zip(
+                rollout.observations, actions, rollout.states
+            ):
                 distribution, _ = self.policy.distribution(observation, state)
                 new_log_probs.append(distribution.log_prob(action).sum(-1).squeeze())
                 entropies.append(distribution.entropy().sum(-1).squeeze())
                 predicted_values.append(self.policy.value(observation).squeeze())
+
             new_log_probs = torch.stack(new_log_probs)
             ratio = (new_log_probs - old_log_probs).exp()
-            clipped = ratio.clamp(1 - self.config.clip_ratio, 1 + self.config.clip_ratio)
-            policy_loss = -torch.minimum(ratio * advantages, clipped * advantages).mean()
-            value_loss = nn.functional.mse_loss(torch.stack(predicted_values), returns)
+            clipped = ratio.clamp(
+                1 - self.config.clip_ratio, 1 + self.config.clip_ratio
+            )
+            policy_loss = -torch.minimum(
+                ratio * normalized_advantages, clipped * normalized_advantages
+            ).mean()
+            value_loss = nn.functional.mse_loss(
+                torch.stack(predicted_values), returns
+            )
             entropy = torch.stack(entropies).mean()
-            loss = policy_loss + self.config.value_coefficient * value_loss - self.config.entropy_coefficient * entropy
+            loss = (
+                policy_loss
+                + self.config.value_coefficient * value_loss
+                - self.config.entropy_coefficient * entropy
+            )
+
             self.optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
+            nn.utils.clip_grad_norm_(
+                self.policy.parameters(), self.config.max_grad_norm
+            )
             self.optimizer.step()
-            metrics = {"policy_loss": float(policy_loss.detach()), "value_loss": float(value_loss.detach()), "entropy": float(entropy.detach())}
+
+            metrics = {
+                "policy_loss": float(policy_loss.detach()),
+                "value_loss": float(value_loss.detach()),
+                "entropy": float(entropy.detach()),
+            }
+
         return metrics
