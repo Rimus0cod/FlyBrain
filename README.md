@@ -35,5 +35,21 @@ pip install -r requirements.txt
 python -m training.smoke
 ```
 
+## Milestone 001 PPO comparison
+
+The reproducible baseline-vs-FlyBrain experiment uses the same 2D environment,
+observation contract, reward, episode limits and PPO budget for both policies.
+Run it from the activated virtual environment:
+
+```bash
+python -m training.run_experiment \
+  --config configs/experiments/milestone_001_ppo.json
+```
+
+It writes the resolved config, checkpoint, per-policy metrics and a summary to a
+timestamped directory under `experiments/runs/`. Metrics include success and
+collision rates, path efficiency, mean reward, control stability, parameter
+count and inference latency. Results are measurements, not claims of superiority.
+
 После стабильной навигации добавляются препятствия, visual-flow/looming, затем
 адаптер более сложного 3D-тела. Сам интерфейс мозга при этом не меняется.

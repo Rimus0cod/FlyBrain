@@ -1,0 +1,19 @@
+{
+  "seed": 7,
+  "controllers": ["baseline_mlp", "flybrain"],
+  "environment": {
+    "batch_size": 1,
+    "target_radius": 0.35,
+    "arena_radius": 6.0,
+    "max_steps": 120,
+    "device": "cpu"
+  },
+  "ppo": {
+    "training_steps": 2048,
+    "rollout_steps": 128,
+    "update_epochs": 4,
+    "learning_rate": 0.0003
+  },
+  "evaluation_episodes": 20,
+  "output_root": "experiments/runs"
+}
