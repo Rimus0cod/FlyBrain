@@ -6,7 +6,6 @@ import argparse
 import json
 import random
 import subprocess
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,7 +42,7 @@ def run_model(name: str, config: dict, output_dir: Path) -> dict:
     observation = environment.reset(seed=seed)
     policy = PPOPolicy(name, observation_dim=observation.shape[-1])
     ppo_config = PPOConfig(**config["ppo"])
-    trainer = PPOTrainer(policy, ppo_config)
+    trainer = PPOTrainer(policy, ppo_config, episode_seed=seed)
     state = policy.initial_state(torch.device("cpu"))
     completed_episodes = 0
     updates = []
@@ -54,12 +53,21 @@ def run_model(name: str, config: dict, output_dir: Path) -> dict:
         completed_episodes += completed
         steps += ppo_config.rollout_steps
     checkpoint_path = output_dir / f"{name}.pt"
-    torch.save({"controller": name, "state_dict": policy.state_dict(), "seed": seed, "config": config}, checkpoint_path)
+    torch.save({"controller": name, "observation_dim": observation.shape[-1], "state_dict": policy.state_dict(), "seed": seed, "config": config}, checkpoint_path)
     evaluation_environment = Navigation2DEnvironment(**environment_config)
     metrics = evaluate(policy, evaluation_environment, config["evaluation_episodes"], seed + 10_000)
     metrics.update({"training_steps": steps, "completed_training_episodes": completed_episodes, "final_update": updates[-1]})
     (output_dir / f"{name}.metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True))
     return metrics
+
+
+def load_checkpoint(path: Path) -> PPOPolicy:
+    """Restore a saved policy for independent evaluation or deployment checks."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    policy = PPOPolicy(checkpoint["controller"], checkpoint["observation_dim"])
+    policy.load_state_dict(checkpoint["state_dict"])
+    policy.eval()
+    return policy
 
 
 def main() -> None:

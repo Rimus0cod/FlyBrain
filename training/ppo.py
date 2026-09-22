@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 from torch import Tensor, nn
-from torch.distributions import Normal
+from torch.distributions import Beta
 
 from brain import BaselineMLP, FlyBrainController, FlyBrainState
 
@@ -38,7 +38,9 @@ class PPOPolicy(nn.Module):
         else:
             raise ValueError(f"Unknown controller: {controller_name}")
         self.controller_name = controller_name
-        self.log_std = nn.Parameter(torch.full((2,), -0.7))
+        # Beta has support exactly on (0, 1), so sampled actuator commands need
+        # no clamp and their log-probability remains mathematically valid.
+        self.log_concentration = nn.Parameter(torch.full((2,), 1.5))
         self.value_head = nn.Sequential(
             nn.Linear(observation_dim, 32), nn.Tanh(), nn.Linear(32, 1)
         )
@@ -48,12 +50,13 @@ class PPOPolicy(nn.Module):
             return self.controller.initial_state(1, device)  # type: ignore[union-attr]
         return None
 
-    def distribution(self, observation: Tensor, state: FlyBrainState | None) -> tuple[Normal, FlyBrainState | None]:
+    def distribution(self, observation: Tensor, state: FlyBrainState | None) -> tuple[Beta, FlyBrainState | None]:
         if self.controller_name == "flybrain":
             mean, next_state = self.controller(observation, state)  # type: ignore[operator]
         else:
             mean, next_state = self.controller(observation), None
-        return Normal(mean, self.log_std.exp().expand_as(mean)), next_state
+        concentration = self.log_concentration.exp().expand_as(mean)
+        return Beta(mean * concentration + 1.0, (1.0 - mean) * concentration + 1.0), next_state
 
     def value(self, observation: Tensor) -> Tensor:
         return self.value_head(observation).squeeze(-1)
@@ -62,7 +65,6 @@ class PPOPolicy(nn.Module):
     def act(self, observation: Tensor, state: FlyBrainState | None, deterministic: bool = False) -> tuple[Tensor, Tensor, Tensor, FlyBrainState | None]:
         distribution, next_state = self.distribution(observation, state)
         action = distribution.mean if deterministic else distribution.sample()
-        action = action.clamp(0.0, 1.0)
         return action, distribution.log_prob(action).sum(-1), self.value(observation), next_state
 
 
@@ -72,23 +74,26 @@ class Rollout:
     actions: list[Tensor]
     log_probs: list[Tensor]
     rewards: list[Tensor]
-    dones: list[Tensor]
+    terminated: list[Tensor]
+    episode_ended: list[Tensor]
+    bootstrap_values: list[Tensor]
     values: list[Tensor]
     states: list[FlyBrainState | None]
-    last_value: Tensor
 
 
 class PPOTrainer:
     """On-policy PPO trainer for a single deterministic 2D environment stream."""
 
-    def __init__(self, policy: PPOPolicy, config: PPOConfig, device: str = "cpu") -> None:
+    def __init__(self, policy: PPOPolicy, config: PPOConfig, device: str = "cpu", episode_seed: int = 0) -> None:
         self.policy = policy.to(device)
         self.config = config
         self.device = torch.device(device)
         self.optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate)
+        self.episode_seed = episode_seed
+        self.episode_index = 0
 
     def collect_rollout(self, environment: Any, observation: Tensor, state: FlyBrainState | None) -> tuple[Rollout, Tensor, FlyBrainState | None, int]:
-        data = {name: [] for name in ("observations", "actions", "log_probs", "rewards", "dones", "values", "states")}
+        data = {name: [] for name in ("observations", "actions", "log_probs", "rewards", "terminated", "episode_ended", "bootstrap_values", "values", "states")}
         completed_episodes = 0
         for _ in range(self.config.rollout_steps):
             data["observations"].append(observation.detach())
@@ -99,28 +104,35 @@ class PPOTrainer:
             data["actions"].append(action.detach())
             data["log_probs"].append(log_prob.detach())
             data["rewards"].append(reward.detach())
-            data["dones"].append(done.detach())
+            data["terminated"].append(terminated.detach())
+            data["episode_ended"].append(done.detach())
             data["values"].append(value.detach())
+            # A time-limit truncation bootstraps from V(s[t+1]); a true terminal
+            # state does not. This prevents a time-limit bias in GAE.
+            next_value = self.policy.value(next_observation).detach()
+            data["bootstrap_values"].append(torch.where(terminated, torch.zeros_like(next_value), next_value))
             observation, state = next_observation, next_state
             if bool(done.item()):
                 completed_episodes += 1
-                observation = environment.reset()
+                self.episode_index += 1
+                observation = environment.reset(seed=self.episode_seed + self.episode_index)
                 state = self.policy.initial_state(self.device)
-        return Rollout(**data, last_value=self.policy.value(observation).detach()), observation, state, completed_episodes
+        return Rollout(**data), observation, state, completed_episodes
 
     def update(self, rollout: Rollout) -> dict[str, float]:
         rewards = torch.stack(rollout.rewards).squeeze(-1)
-        dones = torch.stack(rollout.dones).squeeze(-1).float()
+        terminated = torch.stack(rollout.terminated).squeeze(-1).float()
+        episode_ended = torch.stack(rollout.episode_ended).squeeze(-1).float()
+        bootstrap_values = torch.stack(rollout.bootstrap_values).squeeze(-1)
         values = torch.stack(rollout.values).squeeze(-1)
         advantages = torch.zeros_like(rewards)
         gae = torch.zeros((), device=self.device)
-        next_value = rollout.last_value.squeeze()
         for index in reversed(range(len(rewards))):
-            nonterminal = 1.0 - dones[index]
-            delta = rewards[index] + self.config.gamma * next_value * nonterminal - values[index]
-            gae = delta + self.config.gamma * self.config.gae_lambda * nonterminal * gae
+            delta = rewards[index] + self.config.gamma * bootstrap_values[index] - values[index]
+            # Truncations bootstrap their own V(s[t+1]), but neither terminal
+            # nor truncated episodes may leak advantages into the next reset.
+            gae = delta + self.config.gamma * self.config.gae_lambda * (1.0 - episode_ended[index]) * gae
             advantages[index] = gae
-            next_value = values[index]
         returns = advantages + values
         advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
         old_log_probs = torch.stack(rollout.log_probs).squeeze(-1)
