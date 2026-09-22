@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import statistics
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +83,29 @@ def load_checkpoint(path: Path) -> PPOPolicy:
     return policy
 
 
+AGGREGATE_METRICS = (
+    "success_rate", "collision_rate", "path_efficiency", "successful_path_efficiency",
+    "mean_reward", "control_stability", "parameter_count", "controller_parameter_count",
+    "inference_latency_ms",
+)
+
+
+def aggregate_results(per_seed: dict[str, dict[str, dict]]) -> dict[str, dict[str, dict[str, float | int]]]:
+    """Return mean and sample standard deviation for every reported controller metric."""
+    aggregate: dict[str, dict[str, dict[str, float | int]]] = {}
+    controllers = next(iter(per_seed.values())).keys()
+    for controller in controllers:
+        aggregate[controller] = {}
+        for metric in AGGREGATE_METRICS:
+            values = [float(seed_results[controller][metric]) for seed_results in per_seed.values()]
+            aggregate[controller][metric] = {
+                "mean": statistics.fmean(values),
+                "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+                "n": len(values),
+            }
+    return aggregate
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=Path("configs/experiments/milestone_001_ppo.json"))
@@ -92,8 +116,20 @@ def main() -> None:
     output_dir = arguments.output_dir or Path(config["output_root"]) / run_id
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True))
-    results = {name: run_model(name, config, output_dir) for name in config["controllers"]}
-    summary = {"created_at": datetime.now(timezone.utc).isoformat(), "git_commit": git_commit(), "results": results}
+    seeds = config.get("seeds", [config["seed"]])
+    per_seed: dict[str, dict[str, dict]] = {}
+    for seed in seeds:
+        seed_config = {**config, "seed": seed}
+        seed_dir = output_dir / f"seed-{seed}"
+        seed_dir.mkdir()
+        per_seed[str(seed)] = {name: run_model(name, seed_config, seed_dir) for name in config["controllers"]}
+    summary = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "git_commit": git_commit(),
+        "seeds": seeds,
+        "per_seed": per_seed,
+        "aggregate": aggregate_results(per_seed),
+    }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     print(json.dumps(summary, indent=2, sort_keys=True))
 

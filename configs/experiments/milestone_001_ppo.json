@@ -1,5 +1,5 @@
 {
-  "seed": 7,
+  "seeds": [7, 17, 27, 37, 47],
   "controllers": ["baseline_mlp", "flybrain"],
   "environment": {
     "batch_size": 1,
@@ -9,7 +9,7 @@
     "device": "cpu"
   },
   "ppo": {
-    "training_steps": 2048,
+    "training_steps": 4096,
     "rollout_steps": 128,
     "update_epochs": 4,
     "learning_rate": 0.0003
