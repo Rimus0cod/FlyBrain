@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from training.ppo import PPOPolicy, compute_gae
+from training.ppo import PPOConfig, PPOPolicy, PPOTrainer, Rollout, compute_gae
 
 
 class PPOPolicyTests(unittest.TestCase):
@@ -39,6 +39,59 @@ class PPOPolicyTests(unittest.TestCase):
 
         self.assertIsNotNone(next_state)
         self.assertNotIn("heading", {name for name, _ in policy.named_parameters()})
+
+
+    def test_update_reports_action_credit_diagnostics(self) -> None:
+        policy = PPOPolicy("baseline_mlp")
+        observations = [torch.zeros(1, 9) for _ in range(3)]
+        actions = [
+            torch.tensor([[0.18, 0.20]]),
+            torch.tensor([[0.16, 0.28]]),
+            torch.tensor([[0.22, 0.18]]),
+        ]
+        reward_components = {
+            "progress_reward": [
+                torch.tensor([0.10]),
+                torch.tensor([-0.02]),
+                torch.tensor([0.03]),
+            ],
+            "stability_reward": [torch.zeros(1) for _ in range(3)],
+            "energy_penalty": [torch.zeros(1) for _ in range(3)],
+            "completion_reward": [torch.zeros(1) for _ in range(3)],
+            "collision_penalty": [torch.zeros(1) for _ in range(3)],
+        }
+        rewards = [sum(parts) for parts in zip(*reward_components.values())]
+        rollout = Rollout(
+            observations=observations,
+            actions=actions,
+            log_probs=[torch.zeros(1) for _ in range(3)],
+            rewards=rewards,
+            terminated=[torch.tensor([False]), torch.tensor([False]), torch.tensor([True])],
+            episode_ended=[torch.tensor([False]), torch.tensor([False]), torch.tensor([True])],
+            bootstrap_values=[torch.zeros(1) for _ in range(3)],
+            values=[policy.value(obs).detach() for obs in observations],
+            states=[None, None, None],
+            episode_rewards=[sum(float(r.item()) for r in rewards)],
+            episode_successes=0,
+            episode_collisions=1,
+            reward_components=reward_components,
+        )
+        metrics = PPOTrainer(
+            policy, PPOConfig(update_epochs=1)
+        ).update(rollout)
+
+        for key in (
+            "advantage_forward_command_correlation",
+            "advantage_abs_turn_correlation",
+            "progress_forward_command_correlation",
+            "progress_abs_turn_correlation",
+            "positive_advantage_forward_mean",
+            "negative_advantage_forward_mean",
+            "positive_advantage_abs_turn_mean",
+            "negative_advantage_abs_turn_mean",
+        ):
+            self.assertIn(key, metrics)
+            self.assertTrue(torch.isfinite(torch.tensor(metrics[key])))
 
     def test_flybrain_critic_requires_and_uses_recurrent_state(self) -> None:
         policy = PPOPolicy("flybrain")
