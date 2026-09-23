@@ -9,7 +9,7 @@ from simulation.environment import Navigation2DEnvironment
 def run_smoke_test() -> None:
     environment = Navigation2DEnvironment(batch_size=2)
     observation = environment.reset()
-    flybrain = FlyBrainController(visual_dim=4)
+    flybrain = FlyBrainController(visual_dim=observation.shape[-1] - 1)
     baseline = BaselineMLP(observation_dim=observation.shape[-1])
 
     flybrain_state = flybrain.initial_state(batch_size=observation.shape[0])

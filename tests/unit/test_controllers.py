@@ -10,16 +10,16 @@ from brain import BaselineMLP, CentralComplex, FlyBrainController
 class ControllerTests(unittest.TestCase):
     def setUp(self) -> None:
         torch.manual_seed(7)
-        self.observation = torch.randn(3, 5)
+        self.observation = torch.randn(3, 9)
 
     def test_baseline_returns_two_normalized_motor_commands(self) -> None:
-        motors = BaselineMLP(observation_dim=5)(self.observation)
+        motors = BaselineMLP(observation_dim=9)(self.observation)
 
         self.assertEqual(tuple(motors.shape), (3, 2))
         self.assertTrue(torch.all((motors >= 0.0) & (motors <= 1.0)))
 
     def test_flybrain_returns_two_normalized_motor_commands_and_keeps_ring_state(self) -> None:
-        controller = FlyBrainController(visual_dim=4)
+        controller = FlyBrainController(visual_dim=8)
         state = controller.initial_state(batch_size=3)
         motors, next_state = controller(self.observation, state)
 
@@ -31,9 +31,9 @@ class ControllerTests(unittest.TestCase):
         )
 
     def test_flybrain_resets_state_when_batch_size_changes(self) -> None:
-        controller = FlyBrainController(visual_dim=4)
+        controller = FlyBrainController(visual_dim=8)
         state = controller.initial_state(batch_size=1)
-        _, next_state = controller(torch.randn(2, 5), None)
+        _, next_state = controller(torch.randn(2, 9), None)
 
         self.assertEqual(tuple(state.heading.shape), (1, 16))
         self.assertEqual(tuple(next_state.heading.shape), (2, 16))

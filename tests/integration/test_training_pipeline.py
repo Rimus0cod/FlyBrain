@@ -42,7 +42,7 @@ class TrainingPipelineTests(unittest.TestCase):
             torch.manual_seed(11)
             environment = Navigation2DEnvironment(max_steps=10)
             observation = environment.reset(seed=11)
-            policy = PPOPolicy(controller)
+            policy = PPOPolicy(controller, observation_dim=observation.shape[-1])
             before = [parameter.detach().clone() for parameter in policy.parameters()]
             trainer = PPOTrainer(policy, PPOConfig(rollout_steps=8, update_epochs=1), episode_seed=11)
             rollout, _, _, _ = trainer.collect_rollout(environment, observation, policy.initial_state(torch.device("cpu")))

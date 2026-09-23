@@ -53,6 +53,7 @@ Do not expose exact collision time from the simulator as a privileged label; cal
 
 ```text
 4 x coarse beacon receptor activity in [0, 1]
++ 4 x temporal visual difference in [-1, 1]
 + normalized angular velocity in [-1, 1]
 ```
 

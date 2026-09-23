@@ -116,7 +116,7 @@ def main() -> None:
     output_dir = arguments.output_dir or Path(config["output_root"]) / run_id
     output_dir.mkdir(parents=True, exist_ok=False)
     (output_dir / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True))
-    seeds = config.get("seeds", [config["seed"]])
+    seeds = config.get("seeds") or [config["seed"]]
     per_seed: dict[str, dict[str, dict]] = {}
     for seed in seeds:
         seed_config = {**config, "seed": seed}

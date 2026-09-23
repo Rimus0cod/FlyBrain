@@ -1,0 +1,676 @@
+# FlyBrain — Master Roadmap for Autonomous Drone
+
+Репозиторий: `Rimus0cod/86-war-`
+
+Главная цель проекта — исследовать автономный летательный аппарат, который самостоятельно воспринимает окружающую среду, удерживает управление, избегает препятствий и выполняет безопасные навигационные задачи без постоянного управления человеком.
+
+Проект должен развиваться от простого 2D proof-of-concept к 3D симуляции и только затем к безопасному тестированию на реальном аппарате.
+
+---
+
+## PHASE 0 — BASELINE / RESEARCH FOUNDATION
+
+Сначала изучи:
+
+```text
+README.md
+docs/
+brain/
+simulation/
+training/
+configs/
+experiments/
+tests/
+```
+
+Определи фактическое состояние `main`.
+
+Не переписывай архитектуру без необходимости.
+
+Правило:
+
+```text
+read → understand → test → modify → test → document
+```
+
+---
+
+# PHASE 1 — FINISH MILESTONE 001
+
+Текущая архитектура:
+
+```text
+Sensors
+   ↓
+Visual Encoder
+   ↓
+Central Complex
+   ↓
+Motor Controller
+```
+
+Контрольные модели:
+
+```text
+A — Baseline MLP
+B — FlyBrain
+```
+
+Сначала доведи обучение до нормальной работы.
+
+Проверить:
+
+* PPO action distribution;
+* Beta distribution;
+* log probability;
+* GAE;
+* terminated/truncated;
+* bootstrap;
+* recurrent state;
+* gradients;
+* checkpoint loading;
+* deterministic evaluation.
+
+Добавить logging:
+
+```text
+reward
+success
+collision
+mean_action
+std_action
+value
+advantage
+entropy
+policy_loss
+value_loss
+gradient_norm
+```
+
+Запустить несколько независимых seed.
+
+Требование:
+
+```text
+policy parameters before training
+        !=
+policy parameters after training
+```
+
+---
+
+# PHASE 2 — MAKE THE TASK SOLVABLE
+
+До усложнения архитектуры убедись, что сама задача физически решаема.
+
+Добавить:
+
+```text
+random policy
+scripted controller
+trained policy
+```
+
+Scripted controller должен показать, что 2D тело физически способно достигать визуального beacon.
+
+Проверить:
+
+```text
+environment solvable
+sensor signal useful
+reward useful
+PPO learns
+```
+
+Если scripted controller не может решить задачу — сначала исправить environment.
+
+---
+
+# PHASE 3 — HONEST COMPARISON
+
+Сравнивать:
+
+```text
+A — MLP
+B — Recurrent MLP
+C — FlyBrain
+D — FlyBrain + topology constraints
+```
+
+Для всех одинаковые:
+
+```text
+environment
+observations
+reward
+episode limit
+training steps
+seeds
+evaluation set
+```
+
+Метрики:
+
+```text
+success_rate
+collision_rate
+mean_reward
+path_efficiency
+completion_time
+control_energy
+parameter_count
+model_size
+inference_latency
+```
+
+Не объявлять победителя.
+
+Показывать измеренные результаты.
+
+---
+
+# PHASE 4 — BETTER VISUAL SYSTEM
+
+После стабильного Milestone 001 расширить сенсоры.
+
+Добавить:
+
+```text
+visual receptors
+↓
+temporal difference
+↓
+motion estimate
+↓
+optic-flow abstraction
+↓
+looming estimate
+```
+
+Важно:
+
+```text
+raycast distance != optical flow
+```
+
+Оптическое движение должно зависеть от изменения наблюдений во времени.
+
+Добавить visual dropout и noise.
+
+Проверить robustness.
+
+---
+
+# PHASE 5 — 3D BODY
+
+Только после успешного 2D.
+
+Создать:
+
+```text
+3D rigid body
+6-DoF state
+
+position
+velocity
+orientation
+angular velocity
+```
+
+Добавить модель четырёх роторов в симуляторе.
+
+Но мозг не должен знать детали физики.
+
+Архитектура:
+
+```text
+FlyBrain
+   ↓
+abstract motor intent
+   ↓
+BodyAdapter
+   ↓
+flight-control interface
+   ↓
+quadrotor physics
+```
+
+FlyBrain не должен напрямую зависеть от Unity Rigidbody API.
+
+---
+
+# PHASE 6 — BODY ADAPTER
+
+Создать стабильный интерфейс:
+
+```python
+class BodyAdapter:
+    def brain_to_body(self, motor_intent):
+        ...
+
+    def body_to_proprioception(self, body_state):
+        ...
+```
+
+Цель:
+
+```text
+ONE BRAIN
+   ↓
+different bodies
+```
+
+Проверить, что архитектура мозга остаётся неизменной при замене тела.
+
+---
+
+# PHASE 7 — CENTRAL COMPLEX V2
+
+Улучшить текущий Central Complex.
+
+Исследовать:
+
+```text
+ring attractor
+heading representation
+persistent state
+noise robustness
+sensory dropout
+perturbation recovery
+```
+
+Построить ablations:
+
+```text
+no recurrence
+normal recurrence
+ring recurrence
+topology constrained ring
+```
+
+Визуализировать:
+
+```text
+activity bump
+heading state
+recovery after perturbation
+```
+
+---
+
+# PHASE 8 — MEMORY
+
+Добавить Mushroom-Body-inspired module.
+
+Схема:
+
+```text
+sensory representation
+        ↓
+sparse expansion
+        ↓
+associative memory
+        ↓
+navigation/control
+```
+
+Сравнить:
+
+```text
+no memory
+recurrent memory
+sparse associative memory
+```
+
+Не называть это точной копией мозга мухи.
+
+---
+
+# PHASE 9 — MULTIMODAL SENSING
+
+Добавить:
+
+```text
+vision
+IMU / proprioception
+optical flow
+range sensing
+```
+
+Ольфакторный модуль можно добавить позже как отдельный эксперимент.
+
+Главное правило:
+
+```text
+sensor interface
+      ↓
+neural representation
+      ↓
+brain
+```
+
+Сенсоры не должны передавать hidden world state.
+
+---
+
+# PHASE 10 — OBSTACLE AVOIDANCE
+
+Добавить безопасную автономную навигацию:
+
+```text
+environment
+   ↓
+obstacle perception
+   ↓
+FlyBrain
+   ↓
+safe navigation
+```
+
+Сценарии:
+
+```text
+corridor
+room
+random obstacles
+narrow passage
+unknown layout
+partial sensor dropout
+```
+
+Измерять:
+
+```text
+collision rate
+completion rate
+path length
+time
+control smoothness
+```
+
+---
+
+# PHASE 11 — DISTURBANCE / ROBUSTNESS
+
+Случайным образом менять:
+
+```text
+mass
+drag
+motor response
+sensor noise
+sensor latency
+lighting
+wind
+initial orientation
+```
+
+Разделить:
+
+```text
+TRAIN
+VALIDATION
+TEST
+```
+
+Test environment не использовать для настройки модели.
+
+---
+
+# PHASE 12 — SAFETY SUPERVISOR
+
+Перед любым реальным аппаратом ввести отдельный уровень:
+
+```text
+Sensors
+   ↓
+FlyBrain
+   ↓
+Safety Supervisor
+   ↓
+Flight Controller
+   ↓
+Motors
+```
+
+Safety Supervisor отвечает за:
+
+```text
+emergency stop
+safe state
+geofence
+altitude limits
+sensor failure handling
+loss of control handling
+battery protection
+manual override
+```
+
+Автономная политика не должна иметь возможности обходить safety layer.
+
+---
+
+# PHASE 13 — SIM2REAL
+
+Только после стабильной 3D симуляции.
+
+Добавить domain randomization:
+
+```text
+mass
+motor response
+drag
+camera parameters
+sensor noise
+latency
+lighting
+wind
+```
+
+Проверить:
+
+```text
+simulation
+    ↓
+randomized simulation
+    ↓
+hardware-in-the-loop
+    ↓
+controlled real-world test
+```
+
+Не переносить модель на реальный аппарат без успешных simulation tests.
+
+---
+
+# PHASE 14 — COMPUTE / DEPLOYMENT
+
+После корректности модели:
+
+```text
+PyTorch
+   ↓
+ONNX
+   ↓
+runtime
+```
+
+Измерять:
+
+```text
+model size
+RAM
+CPU usage
+GPU usage
+inference latency
+power
+```
+
+Оптимизацию делать только после получения корректного baseline.
+
+---
+
+# PHASE 15 — EXPERIMENT SYSTEM
+
+Каждый эксперимент должен иметь:
+
+```text
+experiment_id
+git_commit
+config
+seed
+training_steps
+model
+environment
+evaluation_set
+checkpoint
+metrics
+notes
+```
+
+Пример:
+
+```text
+experiments/runs/EXP-001/
+├── config.json
+├── checkpoint.pt
+├── metrics.json
+├── system_info.txt
+└── notes.md
+```
+
+Эксперимент должен быть воспроизводимым.
+
+---
+
+# ПОРЯДОК РАЗРАБОТКИ
+
+Никогда не перескакивай через этапы:
+
+```text
+001
+↓
+PPO correctness
+↓
+solvable 2D task
+↓
+multi-seed comparison
+↓
+better visual sensing
+↓
+3D body
+↓
+BodyAdapter
+↓
+Central Complex improvements
+↓
+Memory
+↓
+multimodal sensing
+↓
+obstacle avoidance
+↓
+robustness
+↓
+Sim2Real
+↓
+deployment
+```
+
+Не делать одновременно:
+
+```text
+new architecture
++
+new reward
++
+new sensors
++
+new PPO
++
+new environment
+```
+
+Иначе невозможно понять причину изменения результата.
+
+---
+
+# AGENT RULES
+
+1. Сначала читать существующий код.
+2. Не ломать рабочие API без необходимости.
+3. Делать маленькие изменения.
+4. После каждого изменения запускать tests.
+5. Изменения архитектуры отражать в `docs/`.
+6. Не скрывать ошибки.
+7. Не считать отсутствие ошибки запуском доказательством обучения.
+8. Не утверждать улучшение без статистики.
+9. Не добавлять будущие модули раньше текущего milestone.
+10. Каждый milestone должен иметь измеримый критерий завершения.
+
+---
+
+# DEFINITION OF DONE
+
+Milestone считается завершённым только когда:
+
+```text
+code works
++
+tests pass
++
+training runs
++
+evaluation runs
++
+checkpoint loads
++
+results are reproducible
++
+metrics are saved
++
+documentation updated
+```
+
+---
+
+# ФИНАЛЬНАЯ АРХИТЕКТУРА
+
+```text
+                   ┌───────────────┐
+                   │    SENSORS    │
+                   └───────┬───────┘
+                           ↓
+                  ┌─────────────────┐
+                  │SENSOR PROCESSING│
+                  └────────┬────────┘
+                           ↓
+                  ┌─────────────────┐
+                  │   FLYBRAIN      │
+                  │                 │
+                  │ Vision          │
+                  │ Central Complex │
+                  │ Memory          │
+                  │ Motor Circuit   │
+                  └────────┬────────┘
+                           ↓
+                    Motor Intent
+                           ↓
+                  ┌─────────────────┐
+                  │ Body Adapter    │
+                  └────────┬────────┘
+                           ↓
+                  ┌─────────────────┐
+                  │ Safety Layer    │
+                  └────────┬────────┘
+                           ↓
+                  ┌─────────────────┐
+                  │ Flight Control  │
+                  └────────┬────────┘
+                           ↓
+                       DRONE
+```
+
+Главная исследовательская идея:
+
+**Биологическая архитектура определяет структуру вычислений, обучение адаптирует её к задаче, а Body Adapter позволяет использовать один мозг с разными телами.**

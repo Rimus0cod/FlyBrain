@@ -24,7 +24,7 @@ class Navigation2DIntegrationTests(unittest.TestCase):
                 motors = controller(observation)
             next_observation, reward, terminated, truncated, info = environment.step(motors)
 
-            self.assertEqual(tuple(next_observation.shape), (2, 5))
+            self.assertEqual(tuple(next_observation.shape), (2, 9))
             self.assertEqual(tuple(reward.shape), (2,))
             self.assertEqual(tuple(terminated.shape), (2,))
             self.assertEqual(tuple(truncated.shape), (2,))

@@ -29,7 +29,7 @@ class PPOConfig:
 class PPOPolicy(nn.Module):
     """Actor-critic adapter that gives both controllers an identical PPO API."""
 
-    def __init__(self, controller_name: str, observation_dim: int = 5) -> None:
+    def __init__(self, controller_name: str, observation_dim: int = 9) -> None:
         super().__init__()
         if controller_name == "baseline_mlp":
             self.controller: nn.Module = BaselineMLP(observation_dim)
@@ -82,6 +82,7 @@ class Rollout:
     episode_rewards: list[float]
     episode_successes: int
     episode_collisions: int
+    reward_components: dict[str, list[Tensor]]
 
 
 class PPOTrainer:
@@ -97,6 +98,14 @@ class PPOTrainer:
 
     def collect_rollout(self, environment: Any, observation: Tensor, state: FlyBrainState | None) -> tuple[Rollout, Tensor, FlyBrainState | None, int]:
         data = {name: [] for name in ("observations", "actions", "log_probs", "rewards", "terminated", "episode_ended", "bootstrap_values", "values", "states")}
+        component_names = (
+            "progress_reward",
+            "stability_reward",
+            "energy_penalty",
+            "completion_reward",
+            "collision_penalty",
+        )
+        reward_components = {name: [] for name in component_names}
         completed_episodes = 0
         episode_rewards: list[float] = []
         episode_successes = episode_collisions = 0
@@ -110,6 +119,8 @@ class PPOTrainer:
             data["actions"].append(action.detach())
             data["log_probs"].append(log_prob.detach())
             data["rewards"].append(reward.detach())
+            for name in component_names:
+                reward_components[name].append(info[name].detach())
             current_episode_reward += float(reward.item())
             data["terminated"].append(terminated.detach())
             data["episode_ended"].append(done.detach())
@@ -133,6 +144,7 @@ class PPOTrainer:
             episode_rewards=episode_rewards,
             episode_successes=episode_successes,
             episode_collisions=episode_collisions,
+            reward_components=reward_components,
         ), observation, state, completed_episodes
 
     def update(self, rollout: Rollout) -> dict[str, float]:
@@ -154,7 +166,7 @@ class PPOTrainer:
         advantages = (advantages - raw_advantage_mean) / (advantages.std(unbiased=False) + 1e-8)
         old_log_probs = torch.stack(rollout.log_probs).squeeze(-1)
         actions = rollout.actions
-        metrics: dict[str, float] = {}
+        metrics: dict[str, float]
         for _ in range(self.config.update_epochs):
             new_log_probs, entropies, predicted_values = [], [], []
             for observation, action, state in zip(rollout.observations, actions, rollout.states):
@@ -191,5 +203,9 @@ class PPOTrainer:
                 "episode_reward": sum(rollout.episode_rewards) / len(rollout.episode_rewards) if rollout.episode_rewards else 0.0,
                 "episode_success_rate": rollout.episode_successes / len(rollout.episode_rewards) if rollout.episode_rewards else 0.0,
                 "episode_collision_rate": rollout.episode_collisions / len(rollout.episode_rewards) if rollout.episode_rewards else 0.0,
+                **{
+                    name: float(torch.stack(component_values).mean())
+                    for name, component_values in rollout.reward_components.items()
+                },
             }
         return metrics
