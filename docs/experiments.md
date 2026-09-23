@@ -115,6 +115,28 @@ clean simulation
 
 Only after stable simulation benchmarks should inference be exported to an embedded target.
 
+## 8.1 Phase 2 solvability diagnostic
+
+Before comparing learned architectures, evaluate the same environment with three
+controllers on held-out seeds:
+
+```text
+random   -> expected poor performance
+scripted -> must establish that the task is physically solvable
+trained  -> measured PPO result
+```
+
+The implementation is in `training/evaluate.py`; `run_experiment` stores the
+three result groups under `diagnostics` in each controller metrics file. The
+scripted controller uses only the public visual and angular-rate observation,
+so a high scripted success rate is evidence of solvability rather than a
+privileged-coordinate shortcut.
+
+Each diagnostic also stores `progress_reward_by_step` and `distance_by_step`.
+These trajectories are the primary check that a trained policy is approaching
+the marker before termination, rather than merely changing its episode-average
+reward.
+
 ## 9. Reproducibility
 
 Every run must save:

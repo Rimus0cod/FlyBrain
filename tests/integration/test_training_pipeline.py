@@ -27,6 +27,11 @@ class TrainingPipelineTests(unittest.TestCase):
                 self.assertEqual(metrics["training_steps"], 16)
                 self.assertIn("success_rate", metrics)
                 self.assertIn("inference_latency_ms", metrics)
+                self.assertEqual(
+                    set(metrics["diagnostics"]),
+                    {"random", "scripted", "trained"},
+                )
+                self.assertGreaterEqual(metrics["diagnostics"]["scripted"]["success_rate"], 0.0)
 
     def test_checkpoint_round_trip_restores_policy(self) -> None:
         config = {"seed": 5, "environment": {"batch_size": 1, "max_steps": 8}, "ppo": {"training_steps": 8, "rollout_steps": 8, "update_epochs": 1}, "evaluation_episodes": 1}

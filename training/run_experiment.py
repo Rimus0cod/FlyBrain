@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from simulation.environment import Navigation2DEnvironment
-from training.evaluate import evaluate
+from training.evaluate import RandomController, evaluate, evaluate_controller, scripted_controller
 from training.ppo import PPOConfig, PPOPolicy, PPOTrainer
 
 
@@ -59,6 +59,22 @@ def run_model(name: str, config: dict, output_dir: Path) -> dict:
     metrics = evaluate(policy, evaluation_environment, config["evaluation_episodes"], seed + 10_000)
     restored_policy = load_checkpoint(checkpoint_path)
     restored_metrics = evaluate(restored_policy, Navigation2DEnvironment(**environment_config), config["evaluation_episodes"], seed + 10_000)
+    diagnostic_episodes = config.get("diagnostic_episodes", config["evaluation_episodes"])
+    diagnostics = {
+        "random": evaluate_controller(
+            RandomController(seed + 20_000),
+            Navigation2DEnvironment(**environment_config),
+            diagnostic_episodes,
+            seed + 20_000,
+        ),
+        "scripted": evaluate_controller(
+            scripted_controller,
+            Navigation2DEnvironment(**environment_config),
+            diagnostic_episodes,
+            seed + 30_000,
+        ),
+        "trained": metrics.copy(),
+    }
     comparable = ("success_rate", "collision_rate", "path_efficiency", "mean_reward", "control_stability", "parameter_count")
     checkpoint_matches = all(metrics[key] == restored_metrics[key] for key in comparable)
     metrics.update({
@@ -69,6 +85,7 @@ def run_model(name: str, config: dict, output_dir: Path) -> dict:
         "final_update": updates[-1],
         "checkpoint_evaluation": restored_metrics,
         "checkpoint_evaluation_matches": checkpoint_matches,
+        "diagnostics": diagnostics,
     })
     (output_dir / f"{name}.metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True))
     return metrics

@@ -40,9 +40,14 @@ class PPOPolicy(nn.Module):
         self.controller_name = controller_name
         # Beta has support exactly on (0, 1), so sampled actuator commands need
         # no clamp and their log-probability remains mathematically valid.
-        self.log_concentration = nn.Parameter(torch.full((2,), 1.5))
+        self.log_concentration = nn.Parameter(torch.full((2,), 2.5))
+        if controller_name == "baseline_mlp":
+            nn.init.constant_(self.controller.network[4].bias, -2.2)  # type: ignore[union-attr]
+        else:
+            nn.init.constant_(self.controller.motor[0].bias, -2.2)  # type: ignore[union-attr]
+        value_input_dim = observation_dim + (16 if controller_name == "flybrain" else 0)
         self.value_head = nn.Sequential(
-            nn.Linear(observation_dim, 32), nn.Tanh(), nn.Linear(32, 1)
+            nn.Linear(value_input_dim, 32), nn.Tanh(), nn.Linear(32, 1)
         )
 
     def initial_state(self, device: torch.device) -> FlyBrainState | None:
@@ -58,14 +63,18 @@ class PPOPolicy(nn.Module):
         concentration = self.log_concentration.exp().expand_as(mean)
         return Beta(mean * concentration + 1.0, (1.0 - mean) * concentration + 1.0), next_state
 
-    def value(self, observation: Tensor) -> Tensor:
+    def value(self, observation: Tensor, state: FlyBrainState | None = None) -> Tensor:
+        if self.controller_name == "flybrain":
+            if state is None:
+                raise ValueError("FlyBrain critic requires the recurrent state")
+            observation = torch.cat((observation, state.heading), dim=-1)
         return self.value_head(observation).squeeze(-1)
 
     @torch.no_grad()
     def act(self, observation: Tensor, state: FlyBrainState | None, deterministic: bool = False) -> tuple[Tensor, Tensor, Tensor, FlyBrainState | None]:
         distribution, next_state = self.distribution(observation, state)
         action = distribution.mean if deterministic else distribution.sample()
-        return action, distribution.log_prob(action).sum(-1), self.value(observation), next_state
+        return action, distribution.log_prob(action).sum(-1), self.value(observation, state), next_state
 
 
 @dataclass
@@ -83,6 +92,33 @@ class Rollout:
     episode_successes: int
     episode_collisions: int
     reward_components: dict[str, list[Tensor]]
+
+
+def compute_gae(
+    rewards: Tensor,
+    terminated: Tensor,
+    episode_ended: Tensor,
+    bootstrap_values: Tensor,
+    values: Tensor,
+    gamma: float,
+    gae_lambda: float,
+) -> Tensor:
+    advantages = torch.zeros_like(rewards)
+    gae = torch.zeros((), device=rewards.device)
+    for index in reversed(range(len(rewards))):
+        delta = rewards[index] + gamma * bootstrap_values[index] - values[index]
+        gae = delta + gamma * gae_lambda * (1.0 - episode_ended[index]) * gae
+        advantages[index] = gae
+    return advantages
+
+
+def _correlation(left: Tensor, right: Tensor) -> float:
+    left_centered = left - left.mean()
+    right_centered = right - right.mean()
+    denominator = left_centered.square().sum().sqrt() * right_centered.square().sum().sqrt()
+    if float(denominator) == 0.0:
+        return 0.0
+    return float((left_centered * right_centered).sum() / denominator)
 
 
 class PPOTrainer:
@@ -127,7 +163,7 @@ class PPOTrainer:
             data["values"].append(value.detach())
             # A time-limit truncation bootstraps from V(s[t+1]); a true terminal
             # state does not. This prevents a time-limit bias in GAE.
-            next_value = self.policy.value(next_observation).detach()
+            next_value = self.policy.value(next_observation, next_state).detach()
             data["bootstrap_values"].append(torch.where(terminated, torch.zeros_like(next_value), next_value))
             observation, state = next_observation, next_state
             if bool(done.item()):
@@ -153,16 +189,20 @@ class PPOTrainer:
         episode_ended = torch.stack(rollout.episode_ended).squeeze(-1).float()
         bootstrap_values = torch.stack(rollout.bootstrap_values).squeeze(-1)
         values = torch.stack(rollout.values).squeeze(-1)
-        advantages = torch.zeros_like(rewards)
-        gae = torch.zeros((), device=self.device)
-        for index in reversed(range(len(rewards))):
-            delta = rewards[index] + self.config.gamma * bootstrap_values[index] - values[index]
-            # Truncations bootstrap their own V(s[t+1]), but neither terminal
-            # nor truncated episodes may leak advantages into the next reset.
-            gae = delta + self.config.gamma * self.config.gae_lambda * (1.0 - episode_ended[index]) * gae
-            advantages[index] = gae
+        # Truncations bootstrap their own V(s[t+1]), but neither terminal nor
+        # truncated episodes may leak advantages into the next reset.
+        advantages = compute_gae(
+            rewards,
+            terminated,
+            episode_ended,
+            bootstrap_values,
+            values,
+            self.config.gamma,
+            self.config.gae_lambda,
+        )
         returns = advantages + values
         raw_advantage_mean = advantages.mean()
+        raw_advantage_std = advantages.std(unbiased=False)
         advantages = (advantages - raw_advantage_mean) / (advantages.std(unbiased=False) + 1e-8)
         old_log_probs = torch.stack(rollout.log_probs).squeeze(-1)
         actions = rollout.actions
@@ -173,7 +213,7 @@ class PPOTrainer:
                 distribution, _ = self.policy.distribution(observation, state)
                 new_log_probs.append(distribution.log_prob(action).sum(-1).squeeze())
                 entropies.append(distribution.entropy().sum(-1).squeeze())
-                predicted_values.append(self.policy.value(observation).squeeze())
+                predicted_values.append(self.policy.value(observation, state).squeeze())
             new_log_probs = torch.stack(new_log_probs)
             ratio = (new_log_probs - old_log_probs).exp()
             clipped = ratio.clamp(1 - self.config.clip_ratio, 1 + self.config.clip_ratio)
@@ -207,5 +247,17 @@ class PPOTrainer:
                     name: float(torch.stack(component_values).mean())
                     for name, component_values in rollout.reward_components.items()
                 },
+                "raw_advantage_std": float(raw_advantage_std),
+                "positive_advantage_fraction": float((advantages > 0).float().mean()),
+                "advantage_progress_correlation": _correlation(
+                    advantages,
+                    torch.stack(rollout.reward_components["progress_reward"]).squeeze(-1),
+                ),
+                "positive_advantage_action_mean": float(
+                    sampled_actions[advantages > 0].mean()
+                ) if bool((advantages > 0).any()) else 0.0,
+                "negative_advantage_action_mean": float(
+                    sampled_actions[advantages <= 0].mean()
+                ) if bool((advantages <= 0).any()) else 0.0,
             }
         return metrics

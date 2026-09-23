@@ -5,6 +5,7 @@ import unittest
 import torch
 
 from simulation.environment import Navigation2DEnvironment
+from training.evaluate import RandomController, evaluate_controller, scripted_controller
 from training.sanity import beacon_action
 
 
@@ -30,6 +31,25 @@ class EnvironmentSanityTests(unittest.TestCase):
                     successes += int(info["success"].item())
                     break
         self.assertGreater(successes, 0)
+
+    def test_phase_two_diagnostics_distinguish_random_and_scripted_control(self) -> None:
+        scripted = evaluate_controller(
+            scripted_controller,
+            Navigation2DEnvironment(max_steps=120),
+            episodes=20,
+            seed=100,
+        )
+        random = evaluate_controller(
+            RandomController(200),
+            Navigation2DEnvironment(max_steps=120),
+            episodes=20,
+            seed=200,
+        )
+
+        self.assertGreaterEqual(scripted["success_rate"], 0.8)
+        self.assertLess(random["success_rate"], scripted["success_rate"])
+        self.assertGreater(scripted["progress_reward_by_step"][0], 0.0)
+        self.assertLess(scripted["distance_by_step"][-1], scripted["distance_start_mean"])
 
 
 if __name__ == "__main__":
