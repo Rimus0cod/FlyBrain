@@ -228,11 +228,25 @@ class PPOTrainer:
             if not torch.isfinite(loss) or not torch.isfinite(new_log_probs).all():
                 raise FloatingPointError("PPO update produced NaN or Inf")
             sampled_actions = torch.stack(actions)
+            positive_mask = advantages > 0
+            negative_mask = ~positive_mask
+            forward_command = sampled_actions.mean(dim=-1) - 0.5
+            turn_command = sampled_actions[:, 1] - sampled_actions[:, 0]
+            abs_turn_command = turn_command.abs()
+            progress_reward = torch.stack(
+                rollout.reward_components["progress_reward"]
+            ).squeeze(-1)
+
+            def conditional_mean(values: Tensor, mask: Tensor) -> float:
+                return float(values[mask].mean()) if bool(mask.any()) else 0.0
+
             metrics = {
                 "mean_action": float(sampled_actions.mean()),
                 "std_action": float(sampled_actions.std(unbiased=False)),
                 "min_action": float(sampled_actions.min()),
                 "max_action": float(sampled_actions.max()),
+                "mean_forward_command": float(forward_command.mean()),
+                "mean_abs_turn_command": float(abs_turn_command.mean()),
                 "mean_value": float(values.mean()),
                 "mean_advantage": float(raw_advantage_mean),
                 "mean_ratio": float(ratio.mean().detach()),
@@ -248,16 +262,44 @@ class PPOTrainer:
                     for name, component_values in rollout.reward_components.items()
                 },
                 "raw_advantage_std": float(raw_advantage_std),
-                "positive_advantage_fraction": float((advantages > 0).float().mean()),
+                "positive_advantage_fraction": float(positive_mask.float().mean()),
                 "advantage_progress_correlation": _correlation(
                     advantages,
-                    torch.stack(rollout.reward_components["progress_reward"]).squeeze(-1),
+                    progress_reward,
                 ),
-                "positive_advantage_action_mean": float(
-                    sampled_actions[advantages > 0].mean()
-                ) if bool((advantages > 0).any()) else 0.0,
-                "negative_advantage_action_mean": float(
-                    sampled_actions[advantages <= 0].mean()
-                ) if bool((advantages <= 0).any()) else 0.0,
+                "advantage_forward_command_correlation": _correlation(
+                    advantages,
+                    forward_command,
+                ),
+                "advantage_abs_turn_correlation": _correlation(
+                    advantages,
+                    abs_turn_command,
+                ),
+                "progress_forward_command_correlation": _correlation(
+                    progress_reward,
+                    forward_command,
+                ),
+                "progress_abs_turn_correlation": _correlation(
+                    progress_reward,
+                    abs_turn_command,
+                ),
+                "positive_advantage_action_mean": conditional_mean(
+                    sampled_actions.mean(dim=-1), positive_mask
+                ),
+                "negative_advantage_action_mean": conditional_mean(
+                    sampled_actions.mean(dim=-1), negative_mask
+                ),
+                "positive_advantage_forward_mean": conditional_mean(
+                    forward_command, positive_mask
+                ),
+                "negative_advantage_forward_mean": conditional_mean(
+                    forward_command, negative_mask
+                ),
+                "positive_advantage_abs_turn_mean": conditional_mean(
+                    abs_turn_command, positive_mask
+                ),
+                "negative_advantage_abs_turn_mean": conditional_mean(
+                    abs_turn_command, negative_mask
+                ),
             }
         return metrics
