@@ -135,7 +135,19 @@ privileged-coordinate shortcut.
 Each diagnostic also stores `progress_reward_by_step` and `distance_by_step`.
 These trajectories are the primary check that a trained policy is approaching
 the marker before termination, rather than merely changing its episode-average
-reward.
+
+
+PPO credit-assignment diagnostics also report the relationship between normalized
+advantage and the two control degrees of freedom exposed by the body:
+
+```text
+forward_command = mean(motor_left, motor_right) - 0.5
+turn_command = motor_right - motor_left
+```
+
+Reported values include advantage/progress correlations with forward command and
+absolute turn magnitude, plus conditional means for positive- and negative-advantage
+transitions. These are diagnostic only; they do not change the PPO objective.
 
 ## 9. Reproducibility
 
