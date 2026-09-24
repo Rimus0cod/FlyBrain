@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from training.ppo import PPOPolicy, compute_gae
+from training.ppo import PPOPolicy, _lagged_pairs, compute_gae
 
 
 class PPOPolicyTests(unittest.TestCase):
@@ -20,6 +20,26 @@ class PPOPolicyTests(unittest.TestCase):
         )
 
         self.assertGreater(advantages.item(), 0.0)
+
+    def test_action_credit_features_match_motor_commands(self) -> None:
+        actions = torch.tensor([[[0.2, 0.6]], [[0.4, 0.4]]]).squeeze(1)
+        forward = actions.mean(dim=-1)
+        abs_turn = (actions[:, 1] - actions[:, 0]).abs()
+
+        torch.testing.assert_close(forward, torch.tensor([0.4, 0.4]))
+        torch.testing.assert_close(abs_turn, torch.tensor([0.4, 0.0]))
+
+    def test_lagged_pairs_exclude_episode_boundaries(self) -> None:
+        signal = torch.tensor([10.0, 20.0, 30.0, 40.0])
+        action = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        episode_ended = torch.tensor([0.0, 1.0, 0.0, 0.0])
+
+        lagged_signal, lagged_action = _lagged_pairs(
+            signal, action, episode_ended, lag=1
+        )
+
+        torch.testing.assert_close(lagged_signal, torch.tensor([20.0, 40.0]))
+        torch.testing.assert_close(lagged_action, torch.tensor([1.0, 3.0]))
 
     def test_beta_actions_are_in_bounds_and_have_finite_log_prob(self) -> None:
         policy = PPOPolicy("baseline_mlp")

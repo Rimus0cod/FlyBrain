@@ -137,6 +137,11 @@ These trajectories are the primary check that a trained policy is approaching
 the marker before termination, rather than merely changing its episode-average
 reward.
 
+PPO updates also record lagged credit-assignment metrics for
+`k = 0, 1, 2, 4, 8, 16`, matching advantage or progress at step `t` with
+forward and absolute-turn commands at `t-k`. Pairs crossing an episode reset
+are excluded.
+
 ## 9. Reproducibility
 
 Every run must save:
