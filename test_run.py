@@ -57,3 +57,15 @@ with tempfile.TemporaryDirectory() as directory:
             "negative_advantage_abs_turn_mean",
         ):
             print(f"{k:45} {u.get(k)}")
+
+        print("\nLAGGED CREDIT")
+        for lag in (0, 1, 2, 4, 8, 16):
+            print(f"  lag={lag}")
+            for k in (
+                "advantage_forward_command_correlation",
+                "advantage_abs_turn_correlation",
+                "progress_forward_command_correlation",
+                "progress_abs_turn_correlation",
+            ):
+                key = f"{k}_lag_{lag}"
+                print(f"    {k:43} {u.get(key)}")
